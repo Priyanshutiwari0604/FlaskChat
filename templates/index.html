@@ -1,0 +1,305 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1.0" />
+    <title>Python Chat</title>
+    <meta name="description" content="Realtime Chat App built with Flask + Socket.IO" />
+    <link rel="icon" href="https://cdn-icons-png.flaticon.com/512/134/134914.png" />
+
+    <!-- Socket.IO -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.5/socket.io.min.js"
+        crossorigin="anonymous"></script>
+    <link rel="stylesheet" href="/static/style.css" />
+</head>
+
+<body class="theme-light">
+    <div class="app">
+        <!-- Sidebar -->
+        <aside class="sidebar" id="sidebar">
+            <div class="brand">
+                <div class="dot"></div>
+                <span>Python Chat</span>
+                <button id="sidebar-toggle" class="ghost mobile-only">☰</button>
+            </div>
+
+            <div class="me-card">
+                <img id="me-avatar" class="avatar" alt="you" />
+                <div class="me-info">
+                    <div class="me-label">You</div>
+                    <div id="current-username" class="me-name">—</div>
+                </div>
+            </div>
+
+            <div class="rename">
+                <input id="username-input" type="text" placeholder="New username" />
+                <button id="update-username-button">Rename</button>
+            </div>
+
+            <div class="gender">
+                <label for="gender-select" class="me-label">Avatar Gender</label>
+                <select id="gender-select">
+                    <option value="">Choose gender</option>
+                    <option value="boy">Male</option>
+                    <option value="girl">Female</option>
+                </select>
+                <button id="update-gender-button">Update</button>
+            </div>
+
+            <div class="online">
+                <div class="online-title">Online Users</div>
+                <div id="online-users" class="online-list"></div>
+            </div>
+
+            <div class="foot">
+                <button id="toggle-theme" class="ghost">Toggle Dark</button>
+            </div>
+        </aside>
+
+        <!-- Chat Area -->
+        <main class="chat">
+            <header class="chat-header">
+                <div class="room"># general</div>
+            </header>
+
+            <section id="chat-messages" class="chat-messages"></section>
+
+            <div id="typing-indicator" class="typing hidden"></div>
+
+            <footer class="composer">
+                <textarea id="message-input"
+                    placeholder="Type a message… (Enter to send, Shift+Enter = newline)"></textarea>
+                <button id="send-button" class="send">Send</button>
+            </footer>
+        </main>
+    </div>
+
+    <script>
+        const socket = io();
+
+        // DOM refs
+        const chatMessages = document.getElementById("chat-messages");
+        const messageInput = document.getElementById("message-input");
+        const sendButton = document.getElementById("send-button");
+        const currentUsernameSpan = document.getElementById("current-username");
+        const usernameInput = document.getElementById("username-input");
+        const updateUsernameButton = document.getElementById("update-username-button");
+        const typingIndicator = document.getElementById("typing-indicator");
+        const onlineUsersEl = document.getElementById("online-users");
+        const meAvatar = document.getElementById("me-avatar");
+        const toggleThemeBtn = document.getElementById("toggle-theme");
+        const genderSelect = document.getElementById("gender-select");
+        const updateGenderButton = document.getElementById("update-gender-button");
+        const sidebar = document.getElementById("sidebar");
+        const sidebarToggle = document.getElementById("sidebar-toggle");
+
+        // State
+        let currentUsername = "";
+        let typingTimeout = null;
+        let lastSentTyping = false;
+        let typingUsers = new Set();
+
+        // Helpers
+        function timeAgo(iso) {
+            if (!iso) return "";
+            const then = new Date(iso).getTime();
+            const now = Date.now();
+            const s = Math.max(1, Math.round((now - then) / 1000));
+            if (s < 60) return `${s}s ago`;
+            const m = Math.round(s / 60);
+            if (m < 60) return `${m}m ago`;
+            const h = Math.round(m / 60);
+            if (h < 24) return `${h}h ago`;
+            const d = Math.round(h / 24);
+            return `${d}d ago`;
+        }
+        function scrollToBottom() {
+            chatMessages.scrollTop = chatMessages.scrollHeight;
+        }
+        function setMe(username, avatar) {
+            currentUsername = username;
+            currentUsernameSpan.textContent = username;
+            if (avatar) meAvatar.src = avatar;
+        }
+        function setOnline(users) {
+            onlineUsersEl.innerHTML = "";
+            users.forEach(u => {
+                const row = document.createElement("div");
+                row.className = "online-user";
+                row.innerHTML = `
+          <img class="avatar sm" src="${u.avatar}" alt="${u.username}" />
+          <span>${u.username}</span>
+        `;
+                onlineUsersEl.appendChild(row);
+            });
+        }
+        function addSystem(text) {
+            const el = document.createElement("div");
+            el.className = "system";
+            el.textContent = text;
+            chatMessages.appendChild(el);
+            scrollToBottom();
+        }
+        function addMessage({ username, avatar, message, timestamp }) {
+            const mine = username === currentUsername;
+            const el = document.createElement("div");
+            el.className = `msg ${mine ? "mine" : ""}`;
+            el.innerHTML = `
+        <img class="avatar" src="${avatar}" alt="${username}" />
+        <div class="bubble">
+          <div class="meta">
+            <span class="name">${username}</span>
+            <span class="time">${timestamp ? timeAgo(timestamp) : ""}</span>
+          </div>
+          <div class="text"></div>
+        </div>
+      `;
+            el.querySelector(".text").textContent = message;
+            chatMessages.appendChild(el);
+            scrollToBottom();
+        }
+        function setOnline(users) {
+            onlineUsersEl.innerHTML = "";
+            users.forEach(u => {
+                const row = document.createElement("div");
+                row.className = "online-user";
+                row.innerHTML = `
+      <img class="avatar sm" src="${u.avatar}" alt="${u.username}" />
+      <span>${u.username}</span>
+    `;
+                row.addEventListener("click", () => openPrivateChat(u.username, u.avatar));
+                onlineUsersEl.appendChild(row);
+            });
+        }
+        function openPrivateChat(username, avatar) {
+            currentChat = { type: "dm", name: username, avatar };
+            chatMessages.innerHTML = ""; // clear old messages
+            document.querySelector(".room").textContent = `DM with ${username}`;
+        }
+
+
+        function updateTypingIndicator() {
+            if (typingUsers.size === 0) {
+                typingIndicator.classList.add("hidden");
+                return;
+            }
+            typingIndicator.classList.remove("hidden");
+            const arr = Array.from(typingUsers);
+            if (arr.length === 1) {
+                typingIndicator.textContent = `${arr[0]} is typing…`;
+            } else {
+                typingIndicator.textContent = arr.join(", ") + " are typing…";
+            }
+        }
+
+        // Theme toggle
+        toggleThemeBtn.addEventListener("click", () => {
+            document.body.classList.toggle("theme-dark");
+            document.body.classList.toggle("theme-light");
+        });
+
+        // Sidebar toggle (mobile)
+        if (sidebarToggle) {
+            sidebarToggle.addEventListener("click", () => {
+                sidebar.classList.toggle("open");
+            });
+        }
+
+        // Socket events
+        socket.on("set_username", (data) => setMe(data.username));
+        socket.on("message_history", (payload) => payload.messages.forEach(m => addMessage(m)));
+        socket.on("user_joined", (data) => addSystem(`${data.username} joined`));
+        socket.on("user_left", (data) => addSystem(`${data.username} left`));
+        socket.on("new_message", (data) => {
+            if (data.username === currentUsername && !meAvatar.src) meAvatar.src = data.avatar;
+            addMessage(data);
+        });
+        socket.on("username_updated", (data) => {
+            addSystem(`${data.old_username} is now ${data.new_username}`);
+            if (data.old_username === currentUsername) setMe(data.new_username, data.avatar);
+        });
+        socket.on("avatar_updated", (data) => {
+            addSystem(`${data.username} changed their avatar`);
+            if (data.username === currentUsername) meAvatar.src = data.avatar;
+        });
+        socket.on("user_typing", ({ username, isTyping }) => {
+            if (isTyping) {
+                typingUsers.add(username);
+            } else {
+                typingUsers.delete(username);
+            }
+            updateTypingIndicator();
+        });
+        socket.on("online_users_list", ({ users }) => {
+            setOnline(users);
+            const me = users.find(u => u.username === currentUsername);
+            if (me) meAvatar.src = me.avatar;
+        });
+        socket.on("private_message", (data) => {
+            if (
+                currentChat.type === "dm" &&
+                (data.from === currentChat.name || data.to === currentChat.name)
+            ) {
+                addMessage({
+                    username: data.from,
+                    avatar: data.avatar,
+                    message: data.message,
+                    timestamp: data.timestamp,
+                });
+            }
+        });
+
+        // Sending messages
+        function sendMessage() {
+            const text = messageInput.value.trim();
+            if (!text) return;
+
+            if (currentChat.type === "room") {
+                socket.emit("send_message", { message: text });
+            } else if (currentChat.type === "dm") {
+                socket.emit("send_private_message", { to: currentChat.name, message: text });
+            }
+
+            messageInput.value = "";
+            sendTyping(false);
+        }
+
+        sendButton.addEventListener("click", sendMessage);
+        messageInput.addEventListener("keydown", (e) => {
+            if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                sendMessage();
+            } else {
+                sendTyping(true);
+            }
+        });
+        messageInput.addEventListener("keyup", () => {
+            if (typingTimeout) clearTimeout(typingTimeout);
+            typingTimeout = setTimeout(() => sendTyping(false), 900);
+        });
+
+        function sendTyping(isTyping) {
+            if (lastSentTyping === isTyping) return;
+            lastSentTyping = isTyping;
+            socket.emit("typing", { isTyping });
+        }
+
+        // Username + Gender updates
+        updateUsernameButton.addEventListener("click", () => {
+            const newUsername = usernameInput.value.trim();
+            if (newUsername && newUsername !== currentUsername) {
+                socket.emit("update_username", { username: newUsername });
+                usernameInput.value = "";
+            }
+        });
+        updateGenderButton.addEventListener("click", () => {
+            const gender = genderSelect.value;
+            if (gender) {
+                socket.emit("update_avatar_gender", { gender });
+            }
+        });
+    </script>
+</body>
+
+</html>
