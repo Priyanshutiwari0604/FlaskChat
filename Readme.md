@@ -25,3 +25,17 @@ python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\act
 pip install -r requirements.txt
 export SECRET_KEY="change-me"                        # Windows: set SECRET_KEY=change-me
 python app.py
+```
+## Docker
+```bash
+docker build -t python-chat .
+docker run -p 5000:5000 -e SECRET_KEY=change-me python-chat
+```
+## Project structure
+```bash
+app.py
+templates/index.html
+static/style.css
+requirements.txt
+Dockerfile
+```
